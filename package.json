@@ -1,0 +1,23 @@
+{
+  "name": "whatsapp-claude-agent",
+  "version": "1.0.0",
+  "description": "Agente de IA para WhatsApp powered by Claude (Anthropic)",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "keywords": ["whatsapp", "claude", "anthropic", "bot", "ai-agent"],
+  "author": "JVBOTS",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@whiskeysockets/baileys": "^6.7.9",
+    "better-sqlite3": "^11.0.0",
+    "pino": "^9.0.0",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

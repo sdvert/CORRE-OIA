@@ -1,0 +1,21 @@
+# Dependências
+node_modules/
+
+# Variáveis de ambiente (NUNCA suba o .env real!)
+.env
+
+# Sessão do WhatsApp (dados de autenticação locais)
+auth_info/
+
+# Banco de dados local
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+*.log
+logs/
+
+# Sistema
+.DS_Store
+Thumbs.db
