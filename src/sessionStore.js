@@ -1,7 +1,7 @@
 const Database = require('better-sqlite3')
 const path = require('path')
 
-const DB_PATH = path.resolve(process.cwd(), 'sessions.db')
+const DB_PATH = process.env.DB_PATH || path.resolve('/app/data', 'sessions.db')
 
 let db
 

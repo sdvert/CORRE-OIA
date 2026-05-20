@@ -33,7 +33,7 @@ async function handleMessage(userId, userText) {
 
   try {
     const response = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-5',
       max_tokens: MAX_TOKENS,
       system: SYSTEM_PROMPT,
       messages: history
