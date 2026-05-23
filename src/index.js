@@ -50,45 +50,89 @@ function stripMention(text) {
   return text.replace(new RegExp(`@${botNum}\\s*`, 'g'), '').trim()
 }
 
+// Retorna o melhor JID disponível para envio: prefere @s.whatsapp.net, aceita @lid como último recurso
+function resolveDestJid(msg) {
+  const raw = msg.key.remoteJid ?? ''
+
+  // Grupo: chatJid é @g.us — sem necessidade de resolução
+  if (isGroup(raw)) return raw
+
+  // DM normal: já é @s.whatsapp.net
+  if (raw.endsWith('@s.whatsapp.net')) return raw
+
+  // DM via LID: tenta extrair o JID real de campos conhecidos do proto
+  const candidates = [
+    msg.participant,
+    msg.key?.participant,
+    msg.message?.senderKeyDistributionMessage?.groupId,
+    msg.message?.extendedTextMessage?.contextInfo?.participant,
+    msg.message?.extendedTextMessage?.contextInfo?.remoteJid,
+  ]
+  const real = candidates.find(j => j?.endsWith('@s.whatsapp.net'))
+  if (real) {
+    console.log(`✅ JID real encontrado: ${real}`)
+    return real
+  }
+
+  // Último recurso: converte @lid → @s.whatsapp.net com a parte numérica
+  const numeric = raw.split('@')[0]
+  const fallback = `${numeric}@s.whatsapp.net`
+  console.log(`⚠️  LID sem mapa — tentando fallback: ${fallback}`)
+  return fallback
+}
+
 async function processMessage(sock, msg) {
   if (msg.key.fromMe) return
   if (!msg.message)   return
 
-  const chatJid = msg.key.remoteJid
-  const inGroup = isGroup(chatJid)
+  const rawJid  = msg.key.remoteJid
+  const inGroup = isGroup(rawJid)
+
+  // Log diagnóstico só para DMs com @lid
+  if (!inGroup && rawJid?.endsWith('@lid')) {
+    console.log('🔬 LID debug:', JSON.stringify({
+      key:                  msg.key,
+      pushName:             msg.pushName,
+      participant:          msg.participant,
+      messageStubType:      msg.messageStubType,
+      messageStubParameters:msg.messageStubParameters,
+      verifiedBizName:      msg.verifiedBizName,
+      msgKeys:              Object.keys(msg.message ?? {}),
+    }))
+  }
 
   if (inGroup && !botMentioned(msg)) return
 
   const rawText = extractText(msg)
   if (!rawText?.trim()) return
 
-  const text   = inGroup ? stripMention(rawText) : rawText
+  const text = inGroup ? stripMention(rawText) : rawText
   if (!text) return
 
-  const userId = inGroup ? (msg.key.participant ?? chatJid) : chatJid
-  const label  = userId.split('@')[0]
-  const prefix = inGroup ? '[GRUPO] ' : ''
+  const destJid = resolveDestJid(msg)
+  const userId  = inGroup ? (msg.key.participant ?? rawJid) : destJid
+  const label   = userId.split('@')[0]
+  const prefix  = inGroup ? '[GRUPO] ' : ''
 
   console.log(`📩 ${prefix}[${label}]: ${text}`)
 
-  await sock.sendPresenceUpdate('composing', chatJid).catch(() => null)
+  await sock.sendPresenceUpdate('composing', destJid).catch(() => null)
 
   try {
     const reply = isCommand(text)
       ? await runCommand(text, userId)
       : await handleMessage(userId, text)
 
-    // Sempre envia como quoted reply — garante roteamento correto mesmo para @lid
-    await sock.sendMessage(chatJid, { text: reply }, { quoted: msg })
+    await sock.sendMessage(destJid, { text: reply }, { quoted: msg })
 
     console.log(`📤 ${prefix}[${label}]: ${reply.substring(0, 120)}${reply.length > 120 ? '…' : ''}`)
 
   } catch (err) {
     console.error(`❌ Erro [${label}]:`, err.message)
     const errMsg = `⚠️ ${err.message || 'Ocorreu um erro interno. Tente novamente.'}`
-    await sock.sendMessage(chatJid, { text: errMsg }, { quoted: msg }).catch(() => null)
+    await sock.sendMessage(destJid, { text: errMsg }, { quoted: msg }).catch(() => null)
   } finally {
-    await sock.sendPresenceUpdate('paused', chatJid).catch(() => null)
+    await sock.sendPresenceUpdate('paused', destJid).catch(() => null)
   }
 }
 
