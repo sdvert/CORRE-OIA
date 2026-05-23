@@ -22,27 +22,17 @@ const isGroup = jid => jid?.endsWith('@g.us')
 const isLid   = jid => jid?.endsWith('@lid')
 
 let BOT_JID  = null
-// Mapa LID → JID real (@s.whatsapp.net), populado pelos eventos de contatos
 const lidMap = {}
 
 function registerContact(c) {
-  if (c && c.lid && c.id && c.id.endsWith('@s.whatsapp.net')) {
+  if (c?.lid && c?.id?.endsWith('@s.whatsapp.net')) {
     lidMap[c.lid] = c.id
   }
 }
 
-// Resolve @lid → @s.whatsapp.net usando o mapa de contatos
-// Se não encontrar, retorna o JID original (envia para @lid — Baileys ≥3000 suporta)
 function resolveLid(jid) {
   if (!isLid(jid)) return jid
-  const resolved = lidMap[jid]
-  if (resolved) {
-    console.log(`🔀 LID resolvido: ${jid} → ${resolved}`)
-    return resolved
-  }
-  // Mantém @lid original — melhor do que converter para número errado
-  console.log(`⚠️  LID sem mapa, usando original: ${jid}`)
-  return jid
+  return lidMap[jid] ?? jid   // usa @lid direto se não tiver mapa
 }
 
 function extractText(msg) {
@@ -77,9 +67,15 @@ async function processMessage(sock, msg) {
   if (msg.key.fromMe) return
   if (!msg.message)   return
 
-  // Resolve @lid → @s.whatsapp.net para envio correto
-  const chatJid = resolveLid(msg.key.remoteJid)
+  const rawJid  = msg.key.remoteJid
+  const chatJid = resolveLid(rawJid)
   const inGroup = isGroup(chatJid)
+
+  // ── DEBUG ──────────────────────────────────────────────────
+  console.log(`🔍 remoteJid bruto : ${rawJid}`)
+  console.log(`🔍 chatJid resolvido: ${chatJid}`)
+  console.log(`🔍 lidMap entries  : ${Object.keys(lidMap).length}`)
+  // ───────────────────────────────────────────────────────────
 
   if (inGroup && !botMentioned(msg)) return
 
@@ -103,6 +99,8 @@ async function processMessage(sock, msg) {
       ? await runCommand(text, userId)
       : await handleMessage(userId, text)
 
+    console.log(`🚀 Enviando para: ${chatJid}`)
+
     if (inGroup) {
       await sock.sendMessage(chatJid, { text: reply }, { quoted: msg })
     } else {
@@ -112,7 +110,8 @@ async function processMessage(sock, msg) {
     console.log(`📤 ${prefix}[${label}]: ${reply.substring(0, 120)}${reply.length > 120 ? '…' : ''}`)
 
   } catch (err) {
-    console.error(`❌ Erro [${label}]:`, err.message)
+    console.error(`❌ Erro ao enviar [${label}]:`, err.message)
+    console.error(`❌ Stack:`, err.stack?.split('\n')[1] ?? '')
     const errMsg = `⚠️ ${err.message || 'Ocorreu um erro interno. Tente novamente.'}`
     if (inGroup) {
       await sock.sendMessage(chatJid, { text: errMsg }, { quoted: msg }).catch(() => null)
@@ -145,13 +144,17 @@ async function createConnection() {
 
   sock.ev.on('creds.update', saveCreds)
 
-  // Popula lidMap conforme contatos chegam (carregam após conexão)
   sock.ev.on('contacts.upsert', contacts => {
     for (const c of contacts) registerContact(c)
-    console.log(`📒 Contatos carregados: ${Object.keys(lidMap).length} LIDs mapeados`)
+    console.log(`📒 contacts.upsert: ${contacts.length} contatos | lidMap: ${Object.keys(lidMap).length}`)
   })
   sock.ev.on('contacts.update', updates => {
     for (const c of updates) registerContact(c)
+    console.log(`📒 contacts.update: ${updates.length} | lidMap: ${Object.keys(lidMap).length}`)
+  })
+  sock.ev.on('messaging-history.set', ({ contacts = [] }) => {
+    for (const c of contacts) registerContact(c)
+    console.log(`📒 messaging-history.set: ${contacts.length} contatos | lidMap: ${Object.keys(lidMap).length}`)
   })
 
   sock.ev.on('messages.upsert', ({ messages, type }) => {
