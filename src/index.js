@@ -21,24 +21,28 @@ const backoff = n  => Math.min(BASE_DELAY * Math.pow(1.6, n - 1), MAX_DELAY)
 const isGroup = jid => jid?.endsWith('@g.us')
 const isLid   = jid => jid?.endsWith('@lid')
 
-let BOT_JID = null
-let sock_ref = null   // referência global para resolução de LID
+let BOT_JID  = null
+// Mapa LID → JID real (@s.whatsapp.net), populado pelos eventos de contatos
+const lidMap = {}
 
-// Resolve JID @lid → @s.whatsapp.net usando o mapa de contatos do Baileys
+function registerContact(c) {
+  if (c && c.lid && c.id && c.id.endsWith('@s.whatsapp.net')) {
+    lidMap[c.lid] = c.id
+  }
+}
+
+// Resolve @lid → @s.whatsapp.net usando o mapa de contatos
+// Se não encontrar, retorna o JID original (envia para @lid — Baileys ≥3000 suporta)
 function resolveLid(jid) {
   if (!isLid(jid)) return jid
-  const contacts = sock_ref?.contacts ?? {}
-  for (const [phoneJid, contact] of Object.entries(contacts)) {
-    if (contact.lid === jid && phoneJid.endsWith('@s.whatsapp.net')) {
-      console.log(`🔀 LID resolvido: ${jid} → ${phoneJid}`)
-      return phoneJid
-    }
+  const resolved = lidMap[jid]
+  if (resolved) {
+    console.log(`🔀 LID resolvido: ${jid} → ${resolved}`)
+    return resolved
   }
-  // Fallback: converte diretamente (funciona quando o número LID == número telefone)
-  const number = jid.split('@')[0]
-  const fallback = `${number}@s.whatsapp.net`
-  console.log(`🔀 LID fallback: ${jid} → ${fallback}`)
-  return fallback
+  // Mantém @lid original — melhor do que converter para número errado
+  console.log(`⚠️  LID sem mapa, usando original: ${jid}`)
+  return jid
 }
 
 function extractText(msg) {
@@ -73,10 +77,9 @@ async function processMessage(sock, msg) {
   if (msg.key.fromMe) return
   if (!msg.message)   return
 
-  // Resolve @lid → @s.whatsapp.net antes de qualquer coisa
-  const rawChatJid = msg.key.remoteJid
-  const chatJid    = resolveLid(rawChatJid)
-  const inGroup    = isGroup(chatJid)
+  // Resolve @lid → @s.whatsapp.net para envio correto
+  const chatJid = resolveLid(msg.key.remoteJid)
+  const inGroup = isGroup(chatJid)
 
   if (inGroup && !botMentioned(msg)) return
 
@@ -86,10 +89,9 @@ async function processMessage(sock, msg) {
   const text = inGroup ? stripMention(rawText) : rawText
   if (!text) return
 
-  // userId: em grupos = participante; em DM = chatJid resolvido
   const rawParticipant = msg.key.participant ?? chatJid
   const userId = inGroup ? resolveLid(rawParticipant) : chatJid
-  const label  = userId.replace('@s.whatsapp.net', '').replace('@lid', '')
+  const label  = userId.split('@')[0]
   const prefix = inGroup ? '[GRUPO] ' : ''
 
   console.log(`📩 ${prefix}[${label}]: ${text}`)
@@ -141,9 +143,16 @@ async function createConnection() {
     getMessage:            async () => ({ conversation: '' })
   })
 
-  sock_ref = sock   // expõe para resolveLid()
-
   sock.ev.on('creds.update', saveCreds)
+
+  // Popula lidMap conforme contatos chegam (carregam após conexão)
+  sock.ev.on('contacts.upsert', contacts => {
+    for (const c of contacts) registerContact(c)
+    console.log(`📒 Contatos carregados: ${Object.keys(lidMap).length} LIDs mapeados`)
+  })
+  sock.ev.on('contacts.update', updates => {
+    for (const c of updates) registerContact(c)
+  })
 
   sock.ev.on('messages.upsert', ({ messages, type }) => {
     if (type !== 'notify') return
@@ -171,7 +180,6 @@ async function createConnection() {
       }
 
       if (connection === 'close') {
-        sock_ref = null
         const code = lastDisconnect?.error?.output?.statusCode
         console.log(`❌ Conexão encerrada. Código: ${code ?? 'desconhecido'}`)
         resolve(code === DisconnectReason.loggedOut ? 'logged_out' : 'reconnect')
