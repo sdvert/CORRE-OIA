@@ -19,21 +19,8 @@ const MAX_DELAY   = 60000
 const sleep   = ms => new Promise(r => setTimeout(r, ms))
 const backoff = n  => Math.min(BASE_DELAY * Math.pow(1.6, n - 1), MAX_DELAY)
 const isGroup = jid => jid?.endsWith('@g.us')
-const isLid   = jid => jid?.endsWith('@lid')
 
-let BOT_JID  = null
-const lidMap = {}
-
-function registerContact(c) {
-  if (c?.lid && c?.id?.endsWith('@s.whatsapp.net')) {
-    lidMap[c.lid] = c.id
-  }
-}
-
-function resolveLid(jid) {
-  if (!isLid(jid)) return jid
-  return lidMap[jid] ?? jid   // usa @lid direto se não tiver mapa
-}
+let BOT_JID = null
 
 function extractText(msg) {
   const m = msg.message
@@ -67,26 +54,18 @@ async function processMessage(sock, msg) {
   if (msg.key.fromMe) return
   if (!msg.message)   return
 
-  const rawJid  = msg.key.remoteJid
-  const chatJid = resolveLid(rawJid)
+  const chatJid = msg.key.remoteJid
   const inGroup = isGroup(chatJid)
-
-  // ── DEBUG ──────────────────────────────────────────────────
-  console.log(`🔍 remoteJid bruto : ${rawJid}`)
-  console.log(`🔍 chatJid resolvido: ${chatJid}`)
-  console.log(`🔍 lidMap entries  : ${Object.keys(lidMap).length}`)
-  // ───────────────────────────────────────────────────────────
 
   if (inGroup && !botMentioned(msg)) return
 
   const rawText = extractText(msg)
   if (!rawText?.trim()) return
 
-  const text = inGroup ? stripMention(rawText) : rawText
+  const text   = inGroup ? stripMention(rawText) : rawText
   if (!text) return
 
-  const rawParticipant = msg.key.participant ?? chatJid
-  const userId = inGroup ? resolveLid(rawParticipant) : chatJid
+  const userId = inGroup ? (msg.key.participant ?? chatJid) : chatJid
   const label  = userId.split('@')[0]
   const prefix = inGroup ? '[GRUPO] ' : ''
 
@@ -99,25 +78,15 @@ async function processMessage(sock, msg) {
       ? await runCommand(text, userId)
       : await handleMessage(userId, text)
 
-    console.log(`🚀 Enviando para: ${chatJid}`)
-
-    if (inGroup) {
-      await sock.sendMessage(chatJid, { text: reply }, { quoted: msg })
-    } else {
-      await sock.sendMessage(chatJid, { text: reply })
-    }
+    // Sempre envia como quoted reply — garante roteamento correto mesmo para @lid
+    await sock.sendMessage(chatJid, { text: reply }, { quoted: msg })
 
     console.log(`📤 ${prefix}[${label}]: ${reply.substring(0, 120)}${reply.length > 120 ? '…' : ''}`)
 
   } catch (err) {
-    console.error(`❌ Erro ao enviar [${label}]:`, err.message)
-    console.error(`❌ Stack:`, err.stack?.split('\n')[1] ?? '')
+    console.error(`❌ Erro [${label}]:`, err.message)
     const errMsg = `⚠️ ${err.message || 'Ocorreu um erro interno. Tente novamente.'}`
-    if (inGroup) {
-      await sock.sendMessage(chatJid, { text: errMsg }, { quoted: msg }).catch(() => null)
-    } else {
-      await sock.sendMessage(chatJid, { text: errMsg }).catch(() => null)
-    }
+    await sock.sendMessage(chatJid, { text: errMsg }, { quoted: msg }).catch(() => null)
   } finally {
     await sock.sendPresenceUpdate('paused', chatJid).catch(() => null)
   }
@@ -143,19 +112,6 @@ async function createConnection() {
   })
 
   sock.ev.on('creds.update', saveCreds)
-
-  sock.ev.on('contacts.upsert', contacts => {
-    for (const c of contacts) registerContact(c)
-    console.log(`📒 contacts.upsert: ${contacts.length} contatos | lidMap: ${Object.keys(lidMap).length}`)
-  })
-  sock.ev.on('contacts.update', updates => {
-    for (const c of updates) registerContact(c)
-    console.log(`📒 contacts.update: ${updates.length} | lidMap: ${Object.keys(lidMap).length}`)
-  })
-  sock.ev.on('messaging-history.set', ({ contacts = [] }) => {
-    for (const c of contacts) registerContact(c)
-    console.log(`📒 messaging-history.set: ${contacts.length} contatos | lidMap: ${Object.keys(lidMap).length}`)
-  })
 
   sock.ev.on('messages.upsert', ({ messages, type }) => {
     if (type !== 'notify') return
