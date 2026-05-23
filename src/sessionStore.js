@@ -1,65 +1,54 @@
+'use strict'
+
 const Database = require('better-sqlite3')
-const path = require('path')
+const path     = require('path')
 
-const DB_PATH = process.env.DB_PATH || path.resolve('/app/data', 'sessions.db')
+const DB_PATH = process.env.DB_PATH
+  ? path.resolve(process.env.DB_PATH)
+  : path.join(process.cwd(), 'sessions.db')
 
-let db
+let _db = null
 
-function getDb() {
-  if (!db) {
-    db = new Database(DB_PATH)
-    db.pragma('journal_mode = WAL')
-    db.pragma('synchronous = NORMAL')
+function db() {
+  if (_db) return _db
 
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS sessions (
-        user_id   TEXT    PRIMARY KEY,
-        history   TEXT    NOT NULL DEFAULT '[]',
-        updated_at INTEGER NOT NULL DEFAULT 0
-      );
+  _db = new Database(DB_PATH)
+  _db.pragma('journal_mode = WAL')
+  _db.pragma('synchronous  = NORMAL')
+  _db.pragma('foreign_keys = ON')
 
-      CREATE TABLE IF NOT EXISTS metadata (
-        user_id     TEXT PRIMARY KEY,
-        first_seen  INTEGER,
-        msg_count   INTEGER DEFAULT 0
-      );
-    `)
+  _db.exec(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      user_id    TEXT    PRIMARY KEY,
+      history    TEXT    NOT NULL DEFAULT '[]',
+      updated_at INTEGER NOT NULL DEFAULT 0
+    );
 
-    console.log(`📦 Banco de dados iniciado em: ${DB_PATH}`)
-  }
-  return db
+    CREATE TABLE IF NOT EXISTS metadata (
+      user_id    TEXT    PRIMARY KEY,
+      first_seen INTEGER NOT NULL DEFAULT 0,
+      msg_count  INTEGER NOT NULL DEFAULT 0
+    );
+  `)
+
+  console.log(`💾 Banco de dados: ${DB_PATH}`)
+  return _db
 }
 
-/**
- * Retorna o histórico de conversa de um usuário.
- * @param {string} userId - JID do WhatsApp (ex: 5511999999999@s.whatsapp.net)
- * @returns {Array} Array de mensagens { role, content }
- */
 function getHistory(userId) {
-  const database = getDb()
-  const row = database
+  const row = db()
     .prepare('SELECT history FROM sessions WHERE user_id = ?')
     .get(userId)
 
   if (!row) return []
-
-  try {
-    return JSON.parse(row.history)
-  } catch {
-    return []
-  }
+  try   { return JSON.parse(row.history) }
+  catch { return [] }
 }
 
-/**
- * Salva o histórico de conversa de um usuário.
- * @param {string} userId
- * @param {Array} history
- */
 function saveHistory(userId, history) {
-  const database = getDb()
   const now = Date.now()
 
-  database
+  db()
     .prepare(`
       INSERT INTO sessions (user_id, history, updated_at)
       VALUES (?, ?, ?)
@@ -69,8 +58,7 @@ function saveHistory(userId, history) {
     `)
     .run(userId, JSON.stringify(history), now)
 
-  // Atualiza metadata
-  database
+  db()
     .prepare(`
       INSERT INTO metadata (user_id, first_seen, msg_count)
       VALUES (?, ?, 1)
@@ -80,27 +68,18 @@ function saveHistory(userId, history) {
     .run(userId, now)
 }
 
-/**
- * Apaga o histórico de conversa de um usuário.
- * @param {string} userId
- */
 function clearHistory(userId) {
-  const database = getDb()
-  database
+  db()
     .prepare('UPDATE sessions SET history = ?, updated_at = ? WHERE user_id = ?')
     .run('[]', Date.now(), userId)
 }
 
-/**
- * Retorna estatísticas básicas do banco.
- */
 function getStats() {
-  const database = getDb()
-  const users = database.prepare('SELECT COUNT(*) as count FROM sessions').get()
-  const msgs = database.prepare('SELECT SUM(msg_count) as total FROM metadata').get()
+  const { count } = db().prepare('SELECT COUNT(*) as count FROM sessions').get()
+  const { total } = db().prepare('SELECT SUM(msg_count) as total FROM metadata').get()
   return {
-    totalUsers: users.count,
-    totalMessages: msgs.total || 0
+    totalUsers:    count ?? 0,
+    totalMessages: total ?? 0
   }
 }
 

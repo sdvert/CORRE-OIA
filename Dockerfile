@@ -1,30 +1,55 @@
-FROM node:20-alpine
+# ══════════════════════════════════════════════════════════════════════════════
+#  Stage 1 — Builder
+# ══════════════════════════════════════════════════════════════════════════════
+FROM node:20-slim AS builder
 
-# Dependências nativas para better-sqlite3
-RUN apk add --no-cache python3 make g++ sqlite git
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    make \
+    g++ \
+    git \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copia manifests e instala dependências
+# Força git:// → https:// (resolve exit code 128 em ambientes cloud)
+# e ajusta timeouts do npm para compilação de módulos nativos
+RUN git config --global url."https://".insteadOf git:// \
+ && npm config set fetch-retry-maxtimeout 120000 \
+ && npm config set fetch-retries 5
+
 COPY package*.json ./
-RUN npm install --omit=dev
 
-# Copia código fonte
-COPY src/ ./src/
+RUN npm install --omit=dev --no-audit --no-fund --legacy-peer-deps
 
-# Cria pastas para volumes persistentes:
-#   /app/auth_info → credenciais da sessão WhatsApp (DEVE ser volume)
-#   /app/data      → banco SQLite com histórico de conversas (DEVE ser volume)
+# ══════════════════════════════════════════════════════════════════════════════
+#  Stage 2 — Runtime
+# ══════════════════════════════════════════════════════════════════════════════
+FROM node:20-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY --from=builder /app/node_modules ./node_modules
+COPY package.json ./
+COPY src/          ./src/
+
 RUN mkdir -p /app/auth_info /app/data
 
-# Declara os volumes — o EasyPanel/Docker vai montar aqui
-VOLUME ["/app/auth_info", "/app/data"]
+# Valores padrão — sobrescreva nas variáveis de ambiente do EasyPanel
+ENV NODE_ENV=production
+ENV AUTH_FOLDER=/app/auth_info
+ENV DB_PATH=/app/data/sessions.db
 
-# Expõe porta caso queira adicionar uma API HTTP futuramente
-EXPOSE 3000
-
-# Health check: verifica se o processo Node está rodando
-HEALTHCHECK --interval=30s --timeout=10s --start-period=90s \
-  CMD node -e "process.exit(0)"
+HEALTHCHECK \
+    --interval=30s \
+    --timeout=10s  \
+    --start-period=90s \
+    --retries=3 \
+    CMD node -e "process.exit(0)"
 
 CMD ["node", "src/index.js"]
